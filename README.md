@@ -1,4 +1,9 @@
-# Example of working
+# No releases yet
+
+This software is under development.
+There's not even 1 release yet.
+
+# Example of working (rootkit.c first commit)
 
 ```
 diwou@diwou-VirtualBox:~/arprootkit$ ps auwx | grep bash | grep root
